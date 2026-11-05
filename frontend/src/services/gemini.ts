@@ -144,6 +144,7 @@ export function rankModels(models: string[]): string[] {
   return [...ok].sort((a, b) => score(b) - score(a));
 }
 
+const PROVEN = ["gemini-3-flash-preview", "gemini-3-flash", "gemini-2.5-flash"];
 const FALLBACK = ["gemini-3-flash-preview", "gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
 
 export async function modelCandidates(key = getKey()): Promise<string[]> {
@@ -154,7 +155,11 @@ export async function modelCandidates(key = getKey()): Promise<string[]> {
   }
   if (!models.length) return pref ? [pref, ...FALLBACK.filter((m) => m !== pref)] : FALLBACK;
   const ranked = rankModels(models);
-  const out = (pref && models.includes(pref) ? [pref, ...ranked.filter((m) => m !== pref)] : ranked).slice(0, 3);
+  // Avval sinalgan, barqaror ishlaydigan modellar (lokal versiyada shular ishlatilgan), keyin eng yangilari.
+  // Eng yangi model ko'pincha "high demand" (503) bo'ladi, shuning uchun u birinchi emas.
+  const proven = PROVEN.filter((m) => models.includes(m));
+  const order = [...proven, ...ranked.filter((m) => !proven.includes(m))];
+  const out = (pref && models.includes(pref) ? [pref, ...order.filter((m) => m !== pref)] : order).slice(0, 4);
   // barqaror (preview bo'lmagan) zaxira model doim ro'yxatda bo'lsin
   for (const stable of ["gemini-2.5-flash", "gemini-3-flash"]) if (models.includes(stable) && !out.includes(stable)) { out.push(stable); break; }
   return out;
@@ -350,6 +355,8 @@ export async function generate(parts: any[], o: GenOptions = {}): Promise<GenRes
             await pause("cloud_retry", 2000, attempt, model, lastErr);
             continue;
           }
+          // "high demand / overloaded" — shu model hozir band: darhol keyingi modelga o'tamiz
+          if (status === 503 || /high demand|overloaded|UNAVAILABLE/i.test(errText)) break;
           if (attempt >= 3 || (status === 429 && attempt >= 2)) break; // keyingi modelga o'tamiz
           const d = status === 429 ? Math.min(retryDelay(errText, attempt), 30_000) : 4000 * attempt;
           await pause(status === 429 ? "rate_limited_wait" : "cloud_retry", d, attempt, model, lastErr);
