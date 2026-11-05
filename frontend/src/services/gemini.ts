@@ -154,8 +154,10 @@ export async function modelCandidates(key = getKey()): Promise<string[]> {
   }
   if (!models.length) return pref ? [pref, ...FALLBACK.filter((m) => m !== pref)] : FALLBACK;
   const ranked = rankModels(models);
-  const out = pref && models.includes(pref) ? [pref, ...ranked.filter((m) => m !== pref)] : ranked;
-  return out.slice(0, 3);
+  const out = (pref && models.includes(pref) ? [pref, ...ranked.filter((m) => m !== pref)] : ranked).slice(0, 3);
+  // barqaror (preview bo'lmagan) zaxira model doim ro'yxatda bo'lsin
+  for (const stable of ["gemini-2.5-flash", "gemini-3-flash"]) if (models.includes(stable) && !out.includes(stable)) { out.push(stable); break; }
+  return out;
 }
 
 // ---------------- narx (taxminiy, USD / 1M token) ----------------
@@ -249,99 +251,117 @@ export function parseSSE(buf: string): { events: any[]; rest: string } {
   return { events, rest };
 }
 
-/** Oqimli generateContent: 429/5xx da kutib qayta urinadi, model topilmasa keyingisiga o'tadi. */
+/** Oqimli generateContent. 5xx/429 da qayta urinadi, keyin ixtiyoriy sozlamalarsiz, so'ng keyingi modelga o'tadi;
+ * hamma modellar band bo'lsa — kutib yangi aylana. Umumiy kutish maxWaitMs dan oshmaydi. */
 export async function generate(parts: any[], o: GenOptions = {}): Promise<GenResult> {
   const key = o.key || getKey();
   if (!key) throw new GeminiError("gemini_key_missing");
   const models = o.models?.length ? o.models : await modelCandidates(key);
+  const maxWait = o.maxWaitMs ?? 900_000;
+  let waited = 0;
   let lastErr: GeminiError | null = null;
-  for (const model of models) {
-    const flags = { thinking: true, media: true, maxOut: 65536 };
-    let attempt = 0;
-    let waited = 0;
-    for (;;) {
-      if (o.signal?.aborted) throw new GeminiError("aborted");
-      const body = { contents: [{ role: "user", parts }], generationConfig: genConfig(model, o, flags) };
-      let res: Response | null = null;
-      let netErr: GeminiError | null = null;
-      try {
-        res = await fetch(`${base()}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
-          method: "POST", signal: o.signal,
-          headers: { "content-type": "application/json", "x-goog-api-key": key },
-          body: JSON.stringify(body),
-        });
-      } catch (e) {
-        if ((e as any)?.name === "AbortError") throw new GeminiError("aborted");
-        netErr = new GeminiError("cloud_unreachable", String((e as Error)?.message || e));
-      }
-      if (netErr || !res) {
-        attempt += 1;
-        if (attempt > 4) throw netErr || new GeminiError("cloud_unreachable");
-        o.onStatus?.("cloud_retry", { wait: 3 * attempt, attempt, model });
-        await sleep(3000 * attempt, o.signal);
-        continue;
-      }
-      if (res.ok) {
-        let text = "";
-        let finish = "";
-        let usage: any = null;
-        let blocked = "";
-        let streamErr: any = null;
+  const dead = new Set<string>(); // topilmagan modellar
+  const flagsOf = new Map<string, { thinking: boolean; media: boolean; maxOut: number }>();
+
+  const pause = async (stage: string, ms: number, attempt: number, model: string, err: GeminiError | null) => {
+    if (waited + ms > maxWait) throw err || new GeminiError("cloud_error");
+    waited += ms;
+    o.onStatus?.(stage, { wait: Math.round(ms / 1000), attempt, model, message: err?.detail?.slice(0, 200) || "" });
+    await sleep(ms, o.signal);
+  };
+
+  for (let round = 0; round < 6; round++) {
+    let tried = 0;
+    for (const model of models) {
+      if (dead.has(model)) continue;
+      tried += 1;
+      if (!flagsOf.has(model)) flagsOf.set(model, { thinking: true, media: true, maxOut: 65536 });
+      const flags = flagsOf.get(model)!;
+      let attempt = 0;
+      let net = 0;
+      for (;;) {
+        if (o.signal?.aborted) throw new GeminiError("aborted");
+        const body = { contents: [{ role: "user", parts }], generationConfig: genConfig(model, o, flags) };
+        let res: Response | null = null;
         try {
-          await readSSE(res, (ev) => {
-            if (ev.error) { streamErr = ev.error; return; }
-            if (ev.promptFeedback?.blockReason) blocked = ev.promptFeedback.blockReason;
-            const c = ev.candidates?.[0];
-            if (c) {
-              for (const p of c.content?.parts || []) if (typeof p.text === "string" && !p.thought) text += p.text;
-              if (c.finishReason) finish = c.finishReason;
-            }
-            if (ev.usageMetadata) usage = ev.usageMetadata;
-            o.onText?.(text);
-          }, o.signal);
+          res = await fetch(`${base()}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
+            method: "POST", signal: o.signal,
+            headers: { "content-type": "application/json", "x-goog-api-key": key },
+            body: JSON.stringify(body),
+          });
         } catch (e) {
-          if ((e as GeminiError).code === "aborted") throw e;
-          // oqim uzildi: olingan qismini qaytaramiz, chaqiruvchi davom ettiradi
-          finish = finish || "INTERRUPTED";
+          if ((e as any)?.name === "AbortError") throw new GeminiError("aborted");
+          lastErr = new GeminiError("cloud_unreachable", String((e as Error)?.message || e));
+          if (++net > 3) throw lastErr;
+          await pause("cloud_retry", 3000 * net, net, model, lastErr);
+          continue;
         }
-        if (streamErr) {
-          const err = mapError(Number(streamErr.code) || 500, JSON.stringify({ error: streamErr }), o.context);
-          if (!text) {
-            if ((err.status === 429 || err.status >= 500) && waited < (o.maxWaitMs ?? 900_000)) {
-              attempt += 1;
-              const d = Math.min(90_000, 5000 * 2 ** attempt);
-              waited += d;
-              o.onStatus?.(err.status === 429 ? "rate_limited_wait" : "cloud_retry", { wait: Math.round(d / 1000), attempt, model });
-              await sleep(d, o.signal);
-              continue;
-            }
-            throw err;
+        let status = res.status;
+        let errText = "";
+        if (res.ok) {
+          let text = "";
+          let finish = "";
+          let usage: any = null;
+          let blocked = "";
+          let streamErr: any = null;
+          try {
+            await readSSE(res, (ev) => {
+              if (ev.error) { streamErr = ev.error; return; }
+              if (ev.promptFeedback?.blockReason) blocked = ev.promptFeedback.blockReason;
+              const c = ev.candidates?.[0];
+              if (c) {
+                for (const p of c.content?.parts || []) if (typeof p.text === "string" && !p.thought) text += p.text;
+                if (c.finishReason) finish = c.finishReason;
+              }
+              if (ev.usageMetadata) usage = ev.usageMetadata;
+              o.onText?.(text);
+            }, o.signal);
+          } catch (e) {
+            if ((e as GeminiError).code === "aborted") throw e;
+            finish = finish || "INTERRUPTED"; // oqim uzildi: olingan qism qaytadi, chaqiruvchi davom ettiradi
           }
-          finish = finish || "INTERRUPTED";
+          if (!streamErr || text) {
+            if (streamErr) finish = finish || "INTERRUPTED";
+            if (blocked && !text) throw new GeminiError("cloud_blocked", blocked);
+            if (!text && !finish) { status = 500; errText = '{"error":{"message":"empty response"}}'; }
+            else return { text, finish: finish || "STOP", usage, model };
+          } else {
+            status = Number(streamErr.code) || 500;
+            errText = JSON.stringify({ error: streamErr });
+          }
+        } else {
+          errText = await res.text().catch(() => "");
         }
-        if (blocked && !text) throw new GeminiError("cloud_blocked", blocked);
-        return { text, finish: finish || "STOP", usage, model };
+        if (status === 400 && flags.thinking && /thinking/i.test(errText)) { flags.thinking = false; continue; }
+        if (status === 400 && flags.media && /media_?resolution/i.test(errText)) { flags.media = false; continue; }
+        if (status === 400 && flags.maxOut > 8192 && /max_?output_?tokens/i.test(errText)) { flags.maxOut = flags.maxOut > 32768 ? 32768 : 8192; continue; }
+        if (status === 404 || (status === 400 && /not supported for|is not found|unknown model|not available/i.test(errText) && !/youtube|video/i.test(errText))) {
+          lastErr = mapError(404, errText);
+          dead.add(model);
+          break;
+        }
+        if (status === 429 || status >= 500) {
+          lastErr = mapError(status, errText, o.context);
+          attempt += 1;
+          if (status >= 500 && attempt === 2 && (flags.media || flags.thinking)) {
+            // ba'zi model/YouTube birikmalarida ixtiyoriy sozlamalar 500 beradi — ularsiz urinib ko'ramiz
+            flags.media = false;
+            flags.thinking = false;
+            await pause("cloud_retry", 2000, attempt, model, lastErr);
+            continue;
+          }
+          if (attempt >= 3 || (status === 429 && attempt >= 2)) break; // keyingi modelga o'tamiz
+          const d = status === 429 ? Math.min(retryDelay(errText, attempt), 30_000) : 4000 * attempt;
+          await pause(status === 429 ? "rate_limited_wait" : "cloud_retry", d, attempt, model, lastErr);
+          continue;
+        }
+        throw mapError(status, errText, o.context);
       }
-      const errText = await res.text().catch(() => "");
-      const status = res.status;
-      if (status === 400 && flags.thinking && /thinking/i.test(errText)) { flags.thinking = false; continue; }
-      if (status === 400 && flags.media && /media_?resolution/i.test(errText)) { flags.media = false; continue; }
-      if (status === 400 && flags.maxOut > 8192 && /max_?output_?tokens/i.test(errText)) { flags.maxOut = flags.maxOut > 32768 ? 32768 : 8192; continue; }
-      if (status === 404 || (status === 400 && /not supported for|is not found|unknown model/i.test(errText))) {
-        lastErr = mapError(404, errText);
-        break;
-      }
-      if (status === 429 || status >= 500) {
-        attempt += 1;
-        const delay = retryDelay(errText, attempt);
-        waited += delay;
-        if (waited > (o.maxWaitMs ?? 900_000)) throw mapError(status, errText, o.context);
-        o.onStatus?.(status === 429 ? "rate_limited_wait" : "cloud_retry", { wait: Math.round(delay / 1000), attempt, model });
-        await sleep(delay, o.signal);
-        continue;
-      }
-      throw mapError(status, errText, o.context);
     }
+    if (!tried) break;
+    // hamma modellar band — biroz kutib yangi aylana
+    const d = Math.min(90_000, 15_000 * 2 ** round);
+    await pause(lastErr?.status === 429 ? "rate_limited_wait" : "cloud_retry", d, round + 1, "", lastErr);
   }
   throw lastErr || new GeminiError("cloud_model_not_found");
 }

@@ -78,7 +78,9 @@ export default function CloudJobPage({ id }: { id: string; key?: React.Key }) {
       sub: job.stage === "uploading" ? `${job.detail.upload ?? 0}%` : job.stage === "downloading" && job.detail.done_mb != null ? `${Math.round(job.detail.done_mb)} MB` : t("waiting") },
     { k: "proc", title: t("cs_google"), sub: t("waiting") },
     { k: "tr", title: job.stage === "rate_limited_wait" || job.stage === "cloud_retry" ? t("st_" + job.stage) : t("step3"),
-      sub: job.stage === "rate_limited_wait" || job.stage === "cloud_retry" ? t("waitInfo", { s: job.detail.wait || 0, a: job.detail.attempt || 1 })
+      sub: job.stage === "rate_limited_wait" || job.stage === "cloud_retry"
+        ? t("waitInfo", { s: job.detail.wait || 0, a: job.detail.attempt || 1 }) + (job.detail.model ? ` · ${job.detail.model}` : "")
+          + (job.detail.message ? ` — Google: ${job.detail.message}` : "")
         : job.duration ? t("step3s", { a: clock(job.processed), b: clock(job.duration) }) : clock(job.processed) },
     { k: "fin", title: job.options.summaryLang ? t("cs_summary") : t("step5"), sub: t("waiting") },
   ];

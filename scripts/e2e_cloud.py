@@ -226,8 +226,12 @@ async def run(out: Path) -> int:
         await pg.evaluate(f"localStorage.setItem('ilmhubstt.geminiKey', '{KEY}')")
         await pg.fill("input[type=url]", YT)
         await pg.wait_for_selector(".yt-row >> text=YouTube · dQw4w9WgXcQ", timeout=15000)
+        fake_gemini.FAIL_MODELS = {"gemini-3-flash-preview"}  # asosiy model "band" — zaxiraga o'tishi kerak
         await pg.locator(".mobile-cta button.btn-primary").click()
-        await pg.wait_for_selector(".res-grid", timeout=90000)
+        await pg.wait_for_selector("text=Server band", timeout=20000)
+        await pg.wait_for_selector(".res-grid", timeout=120000)
+        fake_gemini.FAIL_MODELS = set()
+        check("gemini-2.5-flash" in await pg.inner_text("aside"), "asosiy model 503 berganda zaxira modelga o'tdi")
         await pg.click(".tabs button.tab-ai")
         await pg.wait_for_selector("text=O‘zbekcha nutq sinovi", timeout=10000)
         sw = await pg.evaluate("document.documentElement.scrollWidth")

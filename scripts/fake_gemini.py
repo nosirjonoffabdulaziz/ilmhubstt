@@ -23,6 +23,7 @@ YT_DURATION = 1500   # soxta YouTube videosi: 25 daqiqa
 FILE_DURATION = 2400  # yuklangan fayl: 40 daqiqa (inline bo'lsa ham)
 LINES_PER_RESPONSE = 30  # shundan keyin MAX_TOKENS (uzun yozuvni bo'lib yozishni sinash)
 STEP = 20
+FAIL_MODELS: set[str] = set()  # shu modellar doim 503 qaytaradi (zaxira modelga o'tishni sinash)
 CHUNK_DELAY = 0.03  # SSE bo'laklari orasidagi kutish (testda sekinlashtirish uchun)
 
 STATE = {"files": {}, "sessions": {}, "requests": [], "rate_limit_once": True, "polls": {}}
@@ -170,6 +171,8 @@ class H(BaseHTTPRequestHandler):
                                       "json": gen.get("responseMimeType"), "prompt_head": text[:160]})
             first = STATE["rate_limit_once"]
             STATE["rate_limit_once"] = False
+        if model in FAIL_MODELS:
+            return self.send_json(503, {"error": {"code": 503, "message": "The model is overloaded. Please try again later.", "status": "UNAVAILABLE"}})
         if first:
             return self.send_json(429, {"error": {"code": 429, "message": "Resource exhausted", "status": "RESOURCE_EXHAUSTED",
                                                   "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "1s"}]}})
