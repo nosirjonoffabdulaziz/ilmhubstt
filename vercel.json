@@ -1,8 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "cd frontend && npm install --no-audit --no-fund",
-  "buildCommand": "cd frontend && node build.mjs --static",
+  "installCommand": "[ -f build.mjs ] || cd frontend; npm install --no-audit --no-fund",
+  "buildCommand": "[ -f build.mjs ] || cd frontend; node build.mjs --static && rm -rf frontend && mkdir -p frontend && cp -r dist frontend/dist",
   "outputDirectory": "frontend/dist",
   "cleanUrls": false,
   "headers": [
