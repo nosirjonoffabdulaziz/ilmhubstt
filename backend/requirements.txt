@@ -1,0 +1,7 @@
+# ilmhubstt backend (Python 3.10–3.12 tavsiya etiladi)
+starlette>=0.40,<2
+uvicorn>=0.30,<1
+python-multipart>=0.0.18
+numpy>=1.24
+requests>=2.31
+faster-whisper>=1.1.1,<2

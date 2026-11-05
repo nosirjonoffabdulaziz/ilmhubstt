@@ -1,0 +1,7 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "ilmhubstt: o'rnatish", "type": "shell", "command": "scripts\\setup_windows.bat", "problemMatcher": [] },
+    { "label": "ilmhubstt: ishga tushirish", "type": "shell", "command": "scripts\\run_windows.bat", "problemMatcher": [] }
+  ]
+}

@@ -1,0 +1,11 @@
+.env
+!.vscode/
+data/
+models/
+backend/.venv/
+**/__pycache__/
+.pytest_cache/
+frontend/node_modules/
+*.log
+.vercel/
+*.env.local

@@ -1,0 +1,15 @@
+services:
+  ilmhubstt:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"     # tashqariga Caddy (HTTPS) orqali chiqariladi
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      DATA_DIR: /data
+      MODEL_DIR: /models
+      TRUST_PROXY: "1"
+    volumes:
+      - ./data:/data
+      - ./models:/models

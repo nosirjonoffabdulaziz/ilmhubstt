@@ -1,0 +1,12 @@
+# HTTPS (Let's Encrypt avtomatik). stt.sizning-domen.uz ni o'z domeningizga almashtiring.
+stt.sizning-domen.uz {
+    request_body {
+        max_size 1100MB
+    }
+    reverse_proxy 127.0.0.1:8000 {
+        transport http {
+            read_timeout 30m
+            write_timeout 30m
+        }
+    }
+}
